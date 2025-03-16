@@ -1,13 +1,15 @@
+from fastapi import FastAPI, HTTPException
 import os
-from fastapi import FastAPI
 from plaid.api import plaid_api
+from plaid.model.transactions_get_request import TransactionsGetRequest
+from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 from plaid.model.products import Products
 from plaid.model.country_code import CountryCode
-from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
-from plaid.configuration import Configuration
-from plaid.api_client import ApiClient
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from dotenv import load_dotenv
+from plaid import ApiClient, Configuration
 
 # Load environment variables
 load_dotenv()
@@ -15,7 +17,7 @@ load_dotenv()
 # Initialize FastAPI app
 app = FastAPI()
 
-# Configure Plaid Client
+# Plaid Configuration
 configuration = Configuration(
     host="https://sandbox.plaid.com",
     api_key={
@@ -24,28 +26,54 @@ configuration = Configuration(
     }
 )
 api_client = ApiClient(configuration)
-plaid_client = plaid_api.PlaidApi(api_client)
+client = plaid_api.PlaidApi(api_client)
 
-@app.api_route("/", methods=["GET", "HEAD"])
+# Store access tokens in memory (for testing)
+ACCESS_TOKENS = {}
+
+# Root Route
+@app.get("/")
 def read_root():
     return {"message": "Plaid of Receipts API is running!"}
 
-# Endpoint to create a Plaid link token
+# Create Link Token
 @app.post("/plaid/create_link_token")
 def create_link_token():
     request = LinkTokenCreateRequest(
-        user={"client_user_id": "unique_user_id"},
-        client_name="Plaid Receipts API",
-        products=[Products("transactions")],
-        country_codes=[CountryCode("US")],
+        client_name="Plaid Test App",
         language="en",
+        country_codes=[CountryCode('US')],
+        user=LinkTokenCreateRequestUser(client_user_id="user-id"),
+        products=[Products('transactions')]
     )
-    response = plaid_client.link_token_create(request)
+    response = client.link_token_create(request)
     return response.to_dict()
 
-# NEW: Endpoint to exchange public_token for access_token
+# Exchange Public Token
 @app.post("/plaid/exchange_public_token")
 def exchange_public_token(public_token: dict):
-    request = ItemPublicTokenExchangeRequest(public_token=public_token["public_token"])
-    response = plaid_client.item_public_token_exchange(request)
-    return {"access_token": response["access_token"], "item_id": response["item_id"]}
+    try:
+        request = ItemPublicTokenExchangeRequest(public_token=public_token["public_token"])
+        response = client.item_public_token_exchange(request)
+        access_token = response.access_token
+        item_id = response.item_id
+        ACCESS_TOKENS[item_id] = access_token  # Store access token
+        return {"access_token": access_token, "item_id": item_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Get Transactions
+@app.post("/plaid/transactions")
+def get_transactions(request_data: dict):
+    try:
+        access_token = request_data["access_token"]
+        request = TransactionsGetRequest(
+            access_token=access_token,
+            start_date="2024-01-01",
+            end_date="2024-03-16",
+            options=TransactionsGetRequestOptions(count=10, offset=0)
+        )
+        response = client.transactions_get(request)
+        return response.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
